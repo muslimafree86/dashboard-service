@@ -1,0 +1,137 @@
+spring:
+  application:
+    name: dashboard
+  config:
+    # local, git-ignored credentials file (DB_HOST=..., DB_PASSWORD=...)
+    import: optional:file:.env[.properties]
+  datasource:
+    # The same database as user-profile-managment: discovery reads its member tables (read-only) and owns only the
+    # dashboard_* tables. For a genuine MySQL server set DB_URL=jdbc:mysql://... and DB_DRIVER=com.mysql.cj.jdbc.Driver.
+    url: ${DB_URL:jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_DATABASE:muslima_users}}
+    username: ${DB_USERNAME:muslima}
+    password: ${DB_PASSWORD:}
+    driver-class-name: ${DB_DRIVER:org.mariadb.jdbc.Driver}
+    hikari:
+      # shared hosting limits concurrent connections per DB user (shared with user-profile-managment)
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+      max-lifetime: 280000
+  flyway:
+    enabled: true
+    # The schema already belongs to user-profile-managment (its own flyway_schema_history): this service keeps a
+    # separate history table and only ever creates dashboard_* objects. baseline-version 0 so that V1 still runs.
+    table: dashboard_flyway_history
+    baseline-on-migrate: true
+    baseline-version: 0
+  messages:
+    basename: i18n/messages
+    fallback-to-system-locale: false
+  jackson:
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: false
+
+server:
+  port: ${PORT:8082}
+  forward-headers-strategy: framework
+  error:
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+
+app:
+  web:
+    allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:3000}
+  security:
+    # must equal user-profile-managment's app.security.jwt.issuer
+    issuer: ${JWT_ISSUER:https://auth.muslimafree.com}
+    # Access tokens are issued by user-profile-managment. Either its JWKS endpoint (key rotation picked up
+    # automatically, e.g. http://user-profile-management:8081/.well-known/jwks.json) or its public key PEM
+    # (e.g. file:/run/secrets/jwt-public.pem); one of the two must be set.
+    jwk-set-uri: ${JWT_JWK_SET_URI:}
+    public-key-location: ${JWT_PUBLIC_KEY_LOCATION:}
+    # revocations (logout, suspension) made in user-profile-managment reach this service within this delay
+    session-cache-ttl: 30s
+  discovery:
+    # Must stay identical to user-profile-managment's app.profile.* rules, otherwise the dashboard shows cards whose
+    # profile page answers 404.
+    opposite-gender-only: true
+    require-verified-email: true
+    online-window: 5m
+    # Ranking is done on the N most recently active members that match the search (README "Performance"); a feed
+    # therefore ends after N members. Larger = deeper feeds, linearly slower searches.
+    candidate-pool: 1000
+    # A cursor is a snapshot of one scroll session: "online now" and ages are computed as of its first page.
+    cursor-ttl: 1h
+    # "اعضاء مشابهون" strip on a member's profile page
+    similar:
+      limit: 10
+      age-span: 5
+    # Relevance = weighted average of four signals, each 0..1. See README "Matching". Only the ratios matter.
+    weights:
+      preference-fit: 45
+      reciprocal-fit: 35
+      activity: 10
+      proximity: 10
+  location:
+    # stored coordinates are snapped to a grid of this many decimal places (2 = ~1.1 km), so a member's position can
+    # never be resolved more precisely than one grid cell, whatever distances are queried
+    grid-decimals: 2
+    # a device location older than this no longer counts; the member is placed at their city / governorate centre
+    device-max-age: 30d
+    # moving one's location repeatedly is how distances are turned into someone's position (trilateration)
+    max-changes-per-day: 20
+    # incremental pass of the search-location index: city / governorate edits that user-profile-managment queued in
+    # dashboard_location_changes, and device locations that went stale (both read through an index)
+    sync-interval: 30s
+    # full pass over every profile: only a safety net for anything the incremental pass missed (e.g. edits made while
+    # user-profile-managment ran with app.interactions.record-place-changes=false)
+    reconcile-interval: 6h
+  photos:
+    # Card photos are signed links, exactly like user-profile-managment issues them; both services must share the
+    # storage mode and the signing material.
+    # local = HMAC links served by user-profile-managment (/api/v1/photos/{id}/content)
+    # s3    = CloudFront signed URLs
+    storage: ${PHOTO_STORAGE:local}
+    url-ttl: 1h
+    url-signing-key: ${PHOTO_URL_SIGNING_KEY:}
+    cloudfront:
+      domain: ${CLOUDFRONT_DOMAIN:}
+      key-pair-id: ${CLOUDFRONT_KEY_PAIR_ID:}
+      private-key: ${CLOUDFRONT_PRIVATE_KEY_LOCATION:}
+  rate-limit:
+    # Per member, per instance. A person scrolling the Home page makes a few requests a minute; these limits only stop
+    # scripts copying member profiles and photos. 429 TOO_MANY_REQUESTS with Retry-After when exceeded.
+    enabled: true
+    per-minute: 60
+    per-day: 2000
+  interactions:
+    # likes per member per UTC day; stops mass-liking to fish for matches. 429 DAILY_LIKE_LIMIT_REACHED when exceeded.
+    daily-like-limit: 100
+  messaging:
+    # messages per member per minute, all conversations together; 429 MESSAGE_RATE_LIMITED when exceeded
+    max-per-minute: 30
+  jobs:
+    # scheduled jobs (location index); one instance at a time via ShedLock
+    enabled: ${JOBS_ENABLED:true}
+  reports:
+    # reports one member may file in 24 hours
+    max-per-day: 10
+  daily-picks:
+    size: 10
+    # a member is not picked again for this many days
+    history: 7
