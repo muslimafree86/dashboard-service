@@ -6,9 +6,10 @@ spring:
     import: optional:file:.env[.properties]
   datasource:
     # The same database as user-profile-managment: discovery reads its member tables (read-only) and owns only the
-    # dashboard_* tables. For a genuine MySQL server set DB_URL=jdbc:mysql://... and DB_DRIVER=com.mysql.cj.jdbc.Driver.
-    url: ${DB_URL:jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_DATABASE:muslima_users}}
-    username: ${DB_USERNAME:muslima}
+    # dashboard_* tables. Defaults: the shared Hostinger dev database (password from DB_PASSWORD or .env).
+    # For a genuine MySQL server set DB_URL=jdbc:mysql://... and DB_DRIVER=com.mysql.cj.jdbc.Driver.
+    url: ${DB_URL:jdbc:mariadb://${DB_HOST:srv1907.hstgr.io}:${DB_PORT:3306}/${DB_DATABASE:u289637970_muslima_dev_db}}
+    username: ${DB_USERNAME:u289637970_muslima_user}
     password: ${DB_PASSWORD:}
     driver-class-name: ${DB_DRIVER:org.mariadb.jdbc.Driver}
     hikari:

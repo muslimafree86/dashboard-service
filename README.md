@@ -55,7 +55,7 @@ mvn spring-boot:run          # http://localhost:8082, Swagger UI at /swagger-ui.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `DB_URL` or `DB_HOST`/`DB_PORT`/`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DRIVER` | The **same** database as user-profile-managment | localhost:3306/muslima_users |
+| `DB_URL` or `DB_HOST`/`DB_PORT`/`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DRIVER` | The **same** database as user-profile-managment; the password comes from `DB_PASSWORD` or the git-ignored `.env` | Hostinger dev DB: srv1907.hstgr.io:3306/u289637970_muslima_dev_db, user u289637970_muslima_user |
 | `DB_POOL_SIZE` | Connections; shared hosting limits connections per DB user across both services | 5 |
 | `JWT_JWK_SET_URI` *or* `JWT_PUBLIC_KEY_LOCATION` | user-profile-managment's JWKS endpoint, or its PEM public key | — (one is required) |
 | `JWT_ISSUER` | Must equal user-profile-managment's `app.security.jwt.issuer` | https://auth.muslimafree.com |
@@ -235,10 +235,15 @@ Distance search works for **every** member, not only those who shared a phone lo
   same SQL statement, so incognito members never appear in "who viewed me". Likes, favourites and messages are
   deliberate and stay visible.
 * **Reports**: a reason (fake profile, inappropriate photos, harassment, scam, offensive messages, not serious,
-  underage, other), a context (profile, photo, message) and an optional note go to the moderation queue; the reported
-  member disappears from the reporter's discovery. The answer is the same whether or not the member exists. Reports
-  survive the reporter's account deletion (reporter set to null). Moderators act on the account with
-  user-profile-managment's admin API and close the report here.
+  underage, spam, inappropriate content, other), a context (profile, photo, message) and an optional note go to the
+  moderation queue; the reported member disappears from the reporter's discovery. The answer is the same whether or
+  not the member exists. Reports survive the reporter's account deletion (reporter set to null).
+  `dashboard_reports` is the platform's **only** report store: admin-managment-service's moderation screens
+  (`/api/v1/admin/reports`, with most-reported members and suspend / ban decisions) read and close the same rows,
+  and the columns they record (`message_id`, `action_taken`, `updated_at`, `version`) come from migration V8. Its
+  migration V1008 moved its former `admin_user_reports` rows here, so run this service's migrations before it.
+  The queue below (`/api/v1/dashboard/admin/reports`) works on the same rows; moderators act on the account with
+  user-profile-managment's admin API.
 
 ## Messaging
 
