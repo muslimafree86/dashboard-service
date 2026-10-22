@@ -64,8 +64,8 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, AuthenticationEntryPoint entryPoint,
-            AccessDeniedHandler accessDeniedHandler, DiscoveryRateLimiter rateLimiter, ProblemDetailFactory problems,
-            ObjectMapper objectMapper) throws Exception {
+            AccessDeniedHandler accessDeniedHandler, DiscoveryRateLimiter rateLimiter, PresenceRecorder presence,
+            ProblemDetailFactory problems, ObjectMapper objectMapper) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> { })
@@ -80,6 +80,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, PUBLIC_GET).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/error").permitAll()
+                        // chat WebSocket: the handshake carries no token, the first frame does (LiveHandler)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/dashboard/live").permitAll()
                         // token roles are not expanded by a hierarchy: an admin or manager token may not carry MODERATOR
                         .requestMatchers("/api/v1/dashboard/admin/**").hasAnyRole(CurrentUser.STAFF_ROLES)
                         .requestMatchers("/api/v1/dashboard/**").hasRole("MEMBER")
@@ -89,7 +91,8 @@ public class SecurityConfig {
                         .authenticationEntryPoint(entryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(entryPoint).accessDeniedHandler(accessDeniedHandler))
-                // created here, not as a bean, so it runs once, inside the chain, after the token was validated
+                // created here, not as beans, so they run once, inside the chain, after the token was validated
+                .addFilterAfter(new LastActiveFilter(presence), BearerTokenAuthenticationFilter.class)
                 .addFilterAfter(new DiscoveryRateLimitFilter(rateLimiter, problems, objectMapper),
                         BearerTokenAuthenticationFilter.class);
         return http.build();

@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -36,6 +37,18 @@ public class NotificationRepository {
                 ON DUPLICATE KEY UPDATE created_at = VALUES(created_at), read_at = NULL
                 """, Map.of("id", id.toString(), "member", member.toString(), "type", type.name(),
                 "actor", actor.toString(), "at", Timestamp.valueOf(at)));
+    }
+
+    /** At most one row per (member, type, actor): a repeated event refreshes it (see {@link #notify}). */
+    public Optional<Notification> find(UUID member, NotificationType type, UUID actor) {
+        List<Notification> rows = jdbc.query("""
+                SELECT id, type, actor_id, created_at, read_at FROM dashboard_notifications
+                WHERE member_id = :member AND type = :type AND actor_id = :actor
+                """, Map.of("member", member.toString(), "type", type.name(), "actor", actor.toString()),
+                (rs, i) -> new Notification(UUID.fromString(rs.getString("id")),
+                        NotificationType.valueOf(rs.getString("type")), UUID.fromString(rs.getString("actor_id")),
+                        rs.getObject("created_at", LocalDateTime.class), rs.getObject("read_at", LocalDateTime.class)));
+        return rows.stream().findFirst();
     }
 
     public void remove(UUID member, NotificationType type, UUID actor) {

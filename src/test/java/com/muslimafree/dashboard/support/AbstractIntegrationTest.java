@@ -78,7 +78,7 @@ public abstract class AbstractIntegrationTest {
     }
 
     @TestConfiguration
-    static class TestClockConfig {
+    public static class TestClockConfig {
 
         @Bean
         @Primary

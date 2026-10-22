@@ -66,6 +66,9 @@ app:
     public-key-location: ${JWT_PUBLIC_KEY_LOCATION:}
     # revocations (logout, suspension) made in user-profile-managment reach this service within this delay
     session-cache-ttl: 30s
+    # presence ("متصل الان"): users.last_active_at is written at most this often per member; same value as
+    # user-profile-managment's app.security.last-active-write-interval
+    last-active-write-interval: 60s
   discovery:
     # Must stay identical to user-profile-managment's app.profile.* rules, otherwise the dashboard shows cards whose
     # profile page answers 404.

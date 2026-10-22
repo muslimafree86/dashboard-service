@@ -31,7 +31,7 @@ badge.
 
 | # | Gap | Decision | Who decided |
 |---|---|---|---|
-| 1 | Brief asked for PostgreSQL/PostGIS; the platform runs on **MariaDB/MySQL** (Hostinger), chosen for user-profile-managment on 2026-09-11 | **Shared MariaDB.** Discovery reads the profile tables read-only (no copies, no sync) and owns only `dashboard_*` tables with its own Flyway history. Distance: lat/lon columns + bounding-box index + haversine in SQL (portable MySQL/MariaDB). | Product owner, 2026-10-06 |
+| 1 | Brief asked for PostgreSQL/PostGIS; the platform runs on **MariaDB/MySQL** (Hostinger), chosen for user-profile-managment on 2026-09-11 | **Shared MariaDB.** Discovery reads the profile tables read-only (no copies, no sync; the one exception is presence, below) and owns only `dashboard_*` tables with its own Flyway history. Distance: lat/lon columns + bounding-box index + haversine in SQL (portable MySQL/MariaDB). | Product owner, 2026-10-06 |
 | 2 | "علي مسافة __ كم" needs coordinates; profiles hold only free-text country / governorate / city | **Opt-in device location** (`PUT /api/v1/dashboard/me/location`), snapped to ~1 km before storage, never returned to others | Product owner, 2026-10-06 |
 | 3 | No frame for the **الشركاء** (Partners) tab | **Mutual matches**: the member matches my preferences *and* I match theirs | Product owner, 2026-10-06 |
 | 4 | Logged-out Home frame (77:4826) shows cards to visitors | **Members only**; the guest page is marketing. Discovery needs the viewer's gender/preferences/blocks and women's photos must not be public | Product owner, 2026-10-06 |
@@ -64,6 +64,7 @@ user-profile-managment (owner)                 dashboard-service (reader)
   photo links (HMAC / CloudFront) ─── same signing material ─► signs card photo links
 ```
 
-* Nothing in the profile tables is written or altered; no index was added to them (measured unnecessary, README
-  "Performance").
+* Nothing in the profile tables is written or altered, except `users.last_active_at` (presence, with the profile
+  service's own throttle and conditional update, README "Presence"); no index was added to them (measured
+  unnecessary, README "Performance").
 * The table snapshot in `src/test/resources/db/profile-schema/` is the contract; the integration tests run against it.

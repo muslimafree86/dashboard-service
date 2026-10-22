@@ -32,8 +32,12 @@ public record AppProperties(
     public record Web(List<String> allowedOrigins) {
     }
 
+    /**
+     * @param lastActiveWriteInterval presence is written at most this often per member (same as user-profile-managment's
+     *                                {@code app.security.last-active-write-interval})
+     */
     public record Security(@NotBlank String issuer, String jwkSetUri, String publicKeyLocation,
-            @NotNull Duration sessionCacheTtl) {
+            @NotNull Duration sessionCacheTtl, @NotNull Duration lastActiveWriteInterval) {
     }
 
     /**

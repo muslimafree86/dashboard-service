@@ -22,7 +22,7 @@ e.g. messaging is in `messaging/`. Features talk to each other only through publ
 com.muslimafree.dashboard
 ├── common/              infrastructure shared by all features
 │   ├── config/          AppProperties (app.*), clock, OpenAPI, scheduling (ShedLock)
-│   ├── security/        token validation, session check, per-member rate limit
+│   ├── security/        token validation, session check, per-member rate limit, presence (last active)
 │   ├── exception/       error codes and RFC 7807 problem details (ar / en)
 │   └── util/            cursor codec, time-ordered ids, SQL parameters
 ├── member/              who the viewer is, who may be seen (VisibilityRule), the member card
@@ -32,6 +32,7 @@ com.muslimafree.dashboard
 ├── location/            nearby search: places, device location, search-position index and its job
 ├── hidden/              "not interested"
 ├── interaction/         likes, matches, favourites, Activity tab, Home counters
+├── live/                the WebSocket: authentication, open sockets per member (features push through LiveSessions)
 ├── messaging/           conversations, messages, unread
 ├── notification/        the header bell
 ├── report/              member reports and the moderators' queue
@@ -83,7 +84,7 @@ links point at `/api/v1/photos/...`, which the gateway routes to user-profile-ma
 | `GET /daily-picks` | Today's picks | Up to 10, fixed for the UTC day; mutual matches first; never someone liked, hidden or picked in the last 7 days |
 | `PUT /me/location` · `GET /me/location` · `DELETE /me/location` | Opt-in device location | Snapped to ~1 km; at most 20 moves a day (429 `LOCATION_CHANGE_LIMIT_REACHED`, also under parallel requests); `active` / `expiresAt` say when it stops counting (ask the member for a fresh one); GET answers 204 when none is shared |
 | `GET /me/settings` · `PUT /me/settings` | Dashboard settings | `{incognito}`: my profile views are not recorded |
-| `GET /notifications?page&size` · `GET /notifications/unread` · `PUT /notifications/read` · `PUT /notifications/{id}/read` | Header bell | `LIKE_RECEIVED`, `MATCH`, `NEW_MESSAGE`, with the actor's card; poll the unread count |
+| `GET /notifications?page&size` · `GET /notifications/unread` · `PUT /notifications/read` · `PUT /notifications/{id}/read` | Header bell | `LIKE_RECEIVED`, `MATCH`, `NEW_MESSAGE`, with the actor's card; pushed over `WS /live` as they happen, else poll the unread count |
 | `POST /reports/{memberId}` | Report a member | `{reason, context, details}`; always 202; also hides the member from me; 10 a day |
 | `GET /admin/reports?status&reportedId` · `PATCH /admin/reports/{id}` | Moderation queue (MODERATOR / MANAGER / ADMIN) | Oldest open first, with open reports per member; close as `ACTIONED` / `DISMISSED` with a note |
 | `PUT /hidden-members/{id}` · `DELETE /hidden-members/{id}` · `GET /hidden-members?page&size` | "Not interested" (pass) and its undo list | One-way and silent, unlike a block; 404 for a member the caller cannot see; list newest first |
@@ -97,6 +98,7 @@ links point at `/api/v1/photos/...`, which the gateway routes to user-profile-ma
 | `GET /conversations/{memberId}/messages?before&after&limit` | Chat thread, mini chat (68:1856) | Oldest first. No cursor = latest; `before=<messageId>` = older history; `after=<messageId>` = poll for new messages every few seconds |
 | `POST /conversations/{memberId}/messages` | اكتب رسالتك | `{body}` (1–2000 chars, plain text). Matches only → else 403 `NOT_MATCHED`; 30/minute → 429 `MESSAGE_RATE_LIMITED` |
 | `PUT /conversations/{memberId}/read` | Opening a chat | Clears its unread count (sending a message also does) |
+| `WS /live` | Chat, mini chat, bell, badges | Real-time push of new messages, reads and bell notifications — see [Real-time delivery](#real-time-delivery-websocket) |
 
 The owner of a dashboard is always the token's subject; no endpoint accepts a viewer id. Opening a card uses
 user-profile-managment's `GET /api/v1/members/{id}` (traits, partner preferences, green/red compatibility) — discovery
@@ -245,14 +247,49 @@ Distance search works for **every** member, not only those who shared a phone lo
 * **Visibility**: a conversation is shown only while the other member is visible under the discovery rule, so a block
   hides it from both sides (nothing is deleted; it returns if the block is lifted). Deleting either profile deletes
   the conversation and its messages.
-* **Delivery is REST polling**: an open chat polls `after=<last message id>` every few seconds, the rest of the app
-  polls `/conversations/unread`. It works through the gateway and across instances with no broker. Messaging is exempt
-  from the browsing rate limit and has its own send limit (`app.messaging.max-per-minute`, 30).
+* **Delivery**: pushed over a WebSocket (below); REST stays the source of truth, so a client that reconnects or
+  misses a frame catches up with `after=<last message id>`. Messaging is exempt from the browsing rate limit and has
+  its own send limit (`app.messaging.max-per-minute`, 30).
 * **Storage**: one row per conversation, one per member side (last message preview, unread count, last read — what the
   inbox shows, without reading messages), and messages with time-ordered (UUIDv7) ids. The inbox is one indexed query per
   page; a thread page is one range read on `(conversation_id, created_at, id)`.
 * Text only, as in the Figma. Message bodies are stored as typed (trimmed) and returned as plain text: clients must
   never render them as HTML.
+
+### Real-time delivery (WebSocket)
+
+`wss://<host>/api/v1/dashboard/live` — one socket per tab or device. Sending stays `POST /conversations/{memberId}/messages`
+(match check, visibility and send limit in one place); the socket only pushes.
+
+1. Connect (no token on the handshake: browsers cannot set `Authorization` on a WebSocket, and a token in the URL would
+   land in access logs).
+2. First frame within 10 s: `{"type":"auth","token":"<access token>"}` → `{"type":"ready"}`. Checked by the same
+   decoder as REST: signature, issuer, expiry, live session, role `MEMBER`.
+3. Server frames, sent only after the database commit:
+   * `{"type":"message","memberId":"<other member>","message":{"id","fromMe","body","sentAt"}}` — to the recipient and
+     to the sender's other tabs/devices (`fromMe=true`). Same `message` shape as a thread; `memberId` as in the REST paths.
+   * `{"type":"read","memberId":"<other member>"}` — the member read that chat on another device: clear its badge.
+     Not sent to the writer (no read receipts).
+   * `{"type":"notification","notification":{"id","type","actor","at","read"},"unreadNotifications":3}` — a new or
+     refreshed bell row (`LIKE_RECEIVED`, `MATCH`, `NEW_MESSAGE`), exactly as `GET /notifications` lists it, with the
+     new bell count. A new message therefore sends both a `message` frame (the chat) and a `notification` frame (the
+     bell); repeated messages refresh one row, so its `id` stays the same. Taken-back likes and reads on another
+     device are not pushed: the bell list corrects itself on its next fetch.
+4. Client: `{"type":"ping"}` → `{"type":"pong"}` every ~25 s keeps proxies from idling the socket out. Send a new
+   `auth` frame with a refreshed token before the old one expires (same member only).
+
+Close codes: `4401` not authenticated / token expired / session revoked (refresh the token and reconnect), `4403` no
+`MEMBER` role, `4429` more than 5 sockets for one member, `1008` auth frame for another member, `1007` malformed frame.
+Every 10 s a sweep closes sockets whose token expired or whose session was revoked, so a logout or suspension reaches
+an open socket within ~40 s (sweep + session cache).
+
+On (re)connect a client fetches `/conversations/unread`, `/notifications/unread` and, for an open chat,
+`after=<last id>` once, then relies on pushes. An open socket counts as activity: its `auth` and `ping` frames keep the
+member "online now" (below). The gateway must forward WebSocket upgrades on `/api/v1/dashboard/live`.
+
+**One instance only, for now**: sockets live in the memory of the instance that accepted them, and a send is pushed
+from the instance that stored it. With several instances, members connected to another instance only see the message
+on their next REST call — run one instance, or add a shared relay (Redis pub/sub, or a broker) before scaling out.
 
 ## Ordering and pagination
 
@@ -268,6 +305,14 @@ of the viewer + filters. Every order ends on the member id, so a member never ap
 search they came from and expire after `cursor-ttl` (1 h) → 400 `INVALID_CURSOR`. No total count is returned (it would
 cost as much as the search). Scores can only rise during a scroll session (activity), so a member who becomes active may
 be skipped, never duplicated.
+
+## Presence ("متصل الان")
+
+Every authenticated request and every socket `auth` / `ping` frame refreshes `users.last_active_at`, exactly like
+user-profile-managment's `LastActiveFilter`: at most one write a minute per member (`app.security.last-active-write-interval`,
+the same 60 s) and the same conditional `UPDATE … WHERE last_active_at < now - interval`, so the two services together
+never write more than one would. It is the only write this service makes to a profile table; rejected tokens never
+count. Without it a member who only browses or chats here would show as offline after `online-window` (5 min).
 
 ## Security and privacy
 
@@ -336,6 +381,8 @@ runs them on MySQL 8.4. Integration tests apply user-profile-managment's real mi
 | Incognito / picks | incognito viewers not recorded (the profile service's exact statement), on/off; picks stable all day, mutual first, no repeats within history, liked never again, hidden removed at once |
 | Rate limit | minute and day windows, Retry-After, per-member budgets, rejected requests not counted daily, anonymous calls rejected first |
 | Messaging | matched members exchange messages, both points of view, matches only (one-way like refused), unlike closes but keeps history, block hides for both, inbox/sent tabs by last writer, unread counts and reading, history paging and polling, cursor from another conversation refused, send limit, polling exempt from browsing limit, validation, preview (Arabic, single line, 120 chars), 404 for invisible members, cascade |
+| Presence | dashboard requests and open sockets keep a member online, one write per interval, rejected tokens do not count |
+| Real-time chat | bell notifications pushed (like, match to both, new message refreshing one row) with the unread count; message pushed to the recipient and the sender's other devices, nothing for others or refused sends, read pushed to the reader's other devices only, ping, bad / expired / foreign-key / wrong-issuer / revoked tokens (4401), missing role (4403), frames before auth, switching member, token refresh, auth timeout, sweep of revoked sessions and expired tokens, 5 sockets per member |
 | Interactions | like seen by the liked member, mutual like = match, idempotency, unlike ends a match, private favourites, who viewed me (profile service's exact upsert), counters and lists drop invisible/blocked members without deleting, 404 for invisible members, liking undoes "not interested", daily like limit, paging, cascade |
 
 ## Recommended next steps (deliberately not built yet)
@@ -346,7 +393,8 @@ runs them on MySQL 8.4. Integration tests apply user-profile-managment's real mi
 * **"New" badges** on the Activity lists (seen-until timestamps per list).
 * **More places** in the gazetteer (all Egyptian cities, more countries), or geocoding of free-text cities.
 * **Report-driven automation**: auto-hide a member from everyone after N open reports, pending moderator review.
-* **Real-time delivery** (WebSocket / SSE) once a message broker exists; until then polling.
+* **Cross-instance real-time delivery** (Redis pub/sub or a broker behind `LiveSessions.send`) before running more
+  than one instance; today a socket only hears messages stored by its own instance.
 * **Read receipts, typing indicator, attachments** — not in the Figma.
 * **Report a message / conversation** and **wali (guardian) access** to conversations — trust & safety features to
   decide with product.

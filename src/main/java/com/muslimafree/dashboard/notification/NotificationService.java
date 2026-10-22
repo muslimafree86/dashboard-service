@@ -6,10 +6,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,7 +28,8 @@ import com.muslimafree.dashboard.member.ViewerService;
 
 /**
  * The header bell: in-app notifications written when something happens to a member (liked, matched, new message).
- * Polled like the unread-messages badge; push / e-mail delivery would read the same rows later.
+ * Pushed to open sockets as they happen ({@link NotificationLiveRelay}), polled otherwise; mobile push / e-mail
+ * delivery would read the same rows later.
  */
 @Service
 public class NotificationService {
@@ -36,14 +40,16 @@ public class NotificationService {
     private final DiscoveryService discovery;
     private final NotificationRepository notifications;
     private final AppProperties properties;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     public NotificationService(ViewerService viewers, DiscoveryService discovery, NotificationRepository notifications,
-            AppProperties properties, Clock clock) {
+            AppProperties properties, ApplicationEventPublisher events, Clock clock) {
         this.viewers = viewers;
         this.discovery = discovery;
         this.notifications = notifications;
         this.properties = properties;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -79,6 +85,31 @@ public class NotificationService {
     private void notify(UUID member, NotificationType type, UUID actor, Instant at) {
         notifications.notify(TimeOrderedUuid.generate(at.toEpochMilli()), member, type, actor,
                 LocalDateTime.ofInstant(at, ZoneOffset.UTC));
+        events.publishEvent(new NotificationEvent(member, type, actor));
+    }
+
+    /**
+     * The notification as the bell lists it, with the member's new unread count, for a push after commit. Empty when
+     * the bell would not show it (actor no longer visible, row already gone) or the member cannot browse.
+     */
+    public Optional<LiveNotification> forPush(UUID member, NotificationType type, UUID actor) {
+        Optional<ProfileSnapshot> viewer = viewers.discoverer(member);
+        Optional<NotificationRepository.Notification> row = notifications.find(member, type, actor);
+        if (viewer.isEmpty() || row.isEmpty()) {
+            return Optional.empty();
+        }
+        Optional<MemberCard> card = discovery.visibleCards(viewer.get(), Set.of(actor)).stream().findFirst();
+        if (card.isEmpty()) {
+            return Optional.empty();
+        }
+        NotificationRepository.Notification n = row.get();
+        long unread = notifications.unread(member, viewers.visibleGender(viewer.get()),
+                properties.discovery().requireVerifiedEmail());
+        return Optional.of(new LiveNotification(new NotificationResponse(n.id(), n.type(), card.get(),
+                n.createdAt().toInstant(ZoneOffset.UTC), n.readAt() != null), unread));
+    }
+
+    public record LiveNotification(NotificationResponse notification, long unreadNotifications) {
     }
 
     // ------------------------------------------------------------------------------------------------ the bell

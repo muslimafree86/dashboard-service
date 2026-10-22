@@ -1,5 +1,8 @@
 package com.muslimafree.dashboard.member;
 
+import java.util.Optional;
+import java.util.UUID;
+
 import org.springframework.stereotype.Service;
 
 import com.muslimafree.dashboard.common.config.AppProperties;
@@ -30,9 +33,18 @@ public class ViewerService {
      */
     public ProfileSnapshot requireDiscoverer(CurrentUser user) {
         ProfileSnapshot viewer = profiles.find(user.userId()).orElseThrow(() -> new ApiException(ErrorCode.UNAUTHENTICATED));
-        if (!viewer.onboardingCompleted() || viewer.gender() == null || viewer.dateOfBirth() == null) {
+        if (!canDiscover(viewer)) {
             throw new ApiException(ErrorCode.ONBOARDING_INCOMPLETE);
         }
         return viewer;
+    }
+
+    /** The same viewer for work no request is waiting on (a push): empty instead of an error. */
+    public Optional<ProfileSnapshot> discoverer(UUID memberId) {
+        return profiles.find(memberId).filter(ViewerService::canDiscover);
+    }
+
+    private static boolean canDiscover(ProfileSnapshot viewer) {
+        return viewer.onboardingCompleted() && viewer.gender() != null && viewer.dateOfBirth() != null;
     }
 }

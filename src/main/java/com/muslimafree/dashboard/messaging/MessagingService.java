@@ -12,6 +12,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,16 +51,19 @@ public class MessagingService {
     private final MessageRepository messages;
     private final NotificationService notifications;
     private final AppProperties properties;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     public MessagingService(ViewerService viewers, DiscoveryService discovery, InteractionRepository interactions,
-            MessageRepository messages, NotificationService notifications, AppProperties properties, Clock clock) {
+            MessageRepository messages, NotificationService notifications, AppProperties properties, ApplicationEventPublisher events,
+            Clock clock) {
         this.viewers = viewers;
         this.discovery = discovery;
         this.interactions = interactions;
         this.messages = messages;
         this.notifications = notifications;
         this.properties = properties;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -88,6 +92,7 @@ public class MessagingService {
         messages.recordReceived(memberId, viewer.id(), conversation, at, preview);
         notifications.messageReceived(memberId, viewer.id());
         notifications.conversationRead(viewer.id(), memberId);
+        events.publishEvent(new MessagingEvent.MessageSent(viewer.id(), memberId, message.id(), body, now));
         return toResponse(message, viewer.id());
     }
 
@@ -129,6 +134,7 @@ public class MessagingService {
     public void markRead(CurrentUser user, UUID memberId) {
         messages.markRead(user.userId(), memberId, LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC));
         notifications.conversationRead(user.userId(), memberId);
+        events.publishEvent(new MessagingEvent.ConversationRead(user.userId(), memberId));
     }
 
     @Transactional(readOnly = true)
